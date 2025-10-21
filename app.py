@@ -482,11 +482,14 @@ class Invites(commands.Cog):
         for g in bot.guilds:
             await _refresh_invites(g)
 
-    @commands.Cog.listener())
+    # ⬇️ was `@commands.Cog.listener())` — remove the extra paren
+    @commands.Cog.listener()
     async def on_invite_create(self, invite: discord.Invite):
         await _refresh_invites(invite.guild)
         await aaa_log(invite.guild, "Invite created", BRAND["info"], actor=invite.inviter, fields={
-            "code": invite.code, "max_uses": invite.max_uses, "temporary": invite.temporary,
+            "code": invite.code,
+            "max_uses": invite.max_uses,
+            "temporary": invite.temporary,
         })
 
     @commands.Cog.listener()
