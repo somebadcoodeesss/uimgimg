@@ -1,15 +1,35 @@
 #!/usr/bin/env python3
 # =============================================================================
-# app.py — minimal AAA features only (Render-ready: only token in env)
+# app.py — AAA bot (Render-ready: web health + Discord bot in one process)
 # =============================================================================
 
-import io, os, os.path as op, json, asyncio, random, datetime as dt, typing as t, urllib.parse, uuid, re
+import os
+import io, os.path as op, json, asyncio, random, datetime as dt, typing as t, urllib.parse, uuid, re, itertools
+
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+# --- Web health (Render) -----------------------------------------------------
+from fastapi import FastAPI
+import uvicorn
+
+api = FastAPI()
+
+@api.get("/")
+async def root():
+    return {"ok": True}
+
+@api.get("/health")
+async def health():
+    return {"ok": True}
+
 # ========================== CONFIG ==========================
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]  # REQUIRED
+
+# Presence control: online|idle|dnd|invisible  (set invisible to appear offline)
+PRESENCE_STATUS = os.environ.get("PRESENCE_STATUS", "online").strip().lower()
 
 GUILD_ID                 = "1270144230525763697"
 EPHEMERAL                = True
@@ -83,15 +103,10 @@ ABOUT_OPTIONS = {
 }
 
 # ========================= RUNTIME SETUP ====================
-import io, os, os.path as op, json, asyncio, random, datetime as dt, typing as t, urllib.parse, uuid, re
-import discord
-from discord import app_commands
-from discord.ext import commands
-
-# --------------------------- helpers ------------------------
-def _to_int(val: str) -> t.Optional[int]:
+def _to_int(val: t.Any) -> t.Optional[int]:
     try:
-        return int(str(val or "").strip())
+        s = str(val or "").strip()
+        return int(s)
     except Exception:
         return None
 
@@ -136,7 +151,7 @@ def load_db() -> dict:
     d.setdefault("selfroles_panel_msg_id", None)
     d.setdefault("xp", {})
     d.setdefault("xp_cooldowns", {})
-    d.setdefault("counting", {})  # per-guild: {guild_id: {"last": 0, "last_user": 0}}
+    d.setdefault("counting", {})
     return d
 
 def save_db(db: dict) -> None:
@@ -229,7 +244,6 @@ def is_admin(member: t.Union[discord.Member, discord.User]) -> bool:
         pass
     return False
 
-
 def admin_check():
     async def predicate(inter: discord.Interaction):
         if not isinstance(inter.user, discord.Member):
@@ -308,7 +322,6 @@ class MediaView(discord.ui.View):
             e.add_field(name="CDN", value=f"`{url}`", inline=False)
             e.set_image(url=url)
             await interaction.response.edit_message(embed=e, attachments=[file], view=self.mv)
-            # NOTE: intentionally NOT logging media-quality changes (requested)
 
 class Media(commands.Cog):
     def __init__(self, bot_: commands.Bot):
@@ -365,7 +378,6 @@ class Media(commands.Cog):
                     url = f"https://cdn.discordapp.com/guilds/{guild.id}/users/{member.id}/banners/{banner_hash}.{ext}"
                     if qv == "max" or (qv == "auto" and anim):
                         url += "?size=4096"
-                    import aiohttp
                     async with aiohttp.ClientSession() as s:
                         async with s.get(url) as r:
                             r.raise_for_status()
@@ -470,13 +482,11 @@ class Invites(commands.Cog):
         for g in bot.guilds:
             await _refresh_invites(g)
 
-    @commands.Cog.listener()
+    @commands.Cog.listener())
     async def on_invite_create(self, invite: discord.Invite):
         await _refresh_invites(invite.guild)
         await aaa_log(invite.guild, "Invite created", BRAND["info"], actor=invite.inviter, fields={
-            "code": invite.code,
-            "max_uses": invite.max_uses,
-            "temporary": invite.temporary,
+            "code": invite.code, "max_uses": invite.max_uses, "temporary": invite.temporary,
         })
 
     @commands.Cog.listener()
@@ -542,7 +552,6 @@ class VCPanel(discord.ui.View):
                 return None
         return ch if isinstance(ch, discord.VoiceChannel) else None
 
-
     class LimitSelect(discord.ui.Select):
         def __init__(self, vp: "VCPanel"):
             opts = [discord.SelectOption(label="No limit", value="0")] + \
@@ -565,7 +574,6 @@ class VCPanel(discord.ui.View):
                 await aaa_log(vc.guild, "VC user limit", BRAND["info"], actor=inter.user, fields={"channel": vc.name, "limit": val})
             except Exception as e:
                 await inter.response.send_message(f"Failed: {e}", ephemeral=bool(inter.guild))
-
 
     class BitrateSelect(discord.ui.Select):
         def __init__(self, vp: "VCPanel"):
@@ -592,7 +600,6 @@ class VCPanel(discord.ui.View):
             except Exception as e:
                 await inter.response.send_message(f"Failed: {e}", ephemeral=bool(inter.guild))
 
-
     class BtnLock(discord.ui.Button):
         def __init__(self, vp: "VCPanel"):
             super().__init__(label="Lock/Unlock", style=discord.ButtonStyle.secondary)
@@ -615,7 +622,6 @@ class VCPanel(discord.ui.View):
                 await aaa_log(vc.guild, "VC lock toggle", BRAND["warn"], actor=inter.user, fields={"channel": vc.name, "locked": str(not locked)})
             except Exception as e:
                 await inter.response.send_message(f"Failed: {e}", ephemeral=bool(inter.guild))
-
 
     class BtnRename(discord.ui.Button):
         def __init__(self, vp: "VCPanel"):
@@ -651,7 +657,6 @@ class VCPanel(discord.ui.View):
             except Exception as e:
                 await inter.response.send_message(f"Failed: {e}", ephemeral=bool(inter.guild))
 
-
 class RenameModal(discord.ui.Modal, title="Rename Voice Channel"):
     new_name = discord.ui.TextInput(label="Name", max_length=96)
     def __init__(self, vc_id: int):
@@ -674,7 +679,6 @@ class RenameModal(discord.ui.Modal, title="Rename Voice Channel"):
             await aaa_log(ch.guild, "VC rename", BRAND["info"], actor=inter.user, fields={"channel": ch.name})
         except Exception as e:
             await inter.response.send_message(f"Failed: {e}", ephemeral=bool(inter.guild))
-
 
 class TempVC(commands.Cog):
     def __init__(self, bot_: commands.Bot):
@@ -928,8 +932,8 @@ async def create_ticket(inter: discord.Interaction, subject: str):
     if not guild:
         await inter.response.send_message("Guild missing", ephemeral=True)
         return
-    # category + name yyyyMMdd-username
-    cat = guild.get_channel(TICKET_CATEGORY_ID_INT) if TICKET_CATEGORY_ID_INT else None
+    cat = guild.get_channel(TICKET_PANEL_CHANNEL_ID_INT) if TICKET_PANEL_CHANNEL_ID_INT else None
+    cat_real = guild.get_channel(TICKET_CATEGORY_ID_INT) if TICKET_CATEGORY_ID_INT else None
     today = dt.datetime.utcnow().strftime("%Y/%m/%d")
     safe_date = today.replace("/", "-")
     name = f"{safe_date}-{inter.user.name}"[:90]
@@ -939,7 +943,7 @@ async def create_ticket(inter: discord.Interaction, subject: str):
     }
     ch = await guild.create_text_channel(
         name=name,
-        category=cat if isinstance(cat, discord.CategoryChannel) else None,
+        category=cat_real if isinstance(cat_real, discord.CategoryChannel) else None,
         overwrites=overwrites
     )
     DB["tickets"][str(ch.id)] = {"opener": inter.user.id, "created": dt.datetime.utcnow().isoformat(), "subject": subject}
@@ -1169,7 +1173,6 @@ class AdminEmbed(commands.Cog):
                 fields={"channel": ch.mention, "count": len(deleted)}
             )
 
-
 # ============================ SELF ROLES PANEL ==============================
 SELFROLE_DRAFT: dict[tuple[int,int], dict] = {}
 
@@ -1246,7 +1249,6 @@ class SelfRolesView(discord.ui.View):
             except Exception:
                 pass
 
-
     class SubmitButton(discord.ui.Button):
         def __init__(self):
             super().__init__(label="Submit", style=discord.ButtonStyle.primary, custom_id="sr:submit")
@@ -1294,7 +1296,6 @@ class SelfRolesView(discord.ui.View):
                     await member.add_roles(parent, reason="Platform parent grant"); changes.append(f"+{parent.name}")
                 elif not has_any and member.get_role(PLATFORM_PARENT):
                     await member.remove_roles(parent, reason="Platform parent remove"); changes.append(f"-{parent.name}")
-            # Gender (exclusive)
             # Gender (exclusive)
             if "gender" in draft:
                 current = [rid for rid in GENDER_OPTIONS.values() if member.get_role(rid)]
@@ -1350,25 +1351,17 @@ INVITE_RE = re.compile(r"(discord\.gg/|discord\.com/invite/|discordapp\.com/invi
 LINK_RE = re.compile(r"https?://", re.I)
 
 def level_for_xp(total_xp: int) -> int:
-    # hard progression: cumulative threshold grows fast (target: lvl50 is very hard)
-    # per-level requirement ~ 300 + 40*n + 5*n^2
     lvl = 0
     needed = 0
     while True:
         n = lvl + 1
-        need = 300 + 40*n + 5*(n*n)   # per next level
+        need = 300 + 40*n + 5*(n*n)
         if total_xp < needed + need:
             return lvl
         needed += need
         lvl += 1
 
-LEVEL_ROLES = {
-    10: ROLE_L10,
-    15: ROLE_L15,
-    20: ROLE_L20,
-    25: ROLE_L25,
-    50: ROLE_L50,
-}
+LEVEL_ROLES = {10: ROLE_L10, 15: ROLE_L15, 20: ROLE_L20, 25: ROLE_L25, 50: ROLE_L50}
 
 class ActivityGuard(commands.Cog):
     def __init__(self, bot_: commands.Bot):
@@ -1407,7 +1400,7 @@ class ActivityGuard(commands.Cog):
         if now >= next_ok:
             xp_store = DB.setdefault("xp", {}).setdefault(gkey, {})
             total = int(xp_store.get(ukey, 0))
-            gain = random.randint(12, 22)  # modest
+            gain = random.randint(12, 22)
             total += gain
             xp_store[ukey] = total
             cooldowns[ukey] = now + 60
@@ -1423,7 +1416,6 @@ class ActivityGuard(commands.Cog):
                     e.add_field(name="User", value=f"{msg.author.mention}", inline=True)
                     e.add_field(name="Level", value=str(new_lvl), inline=True)
                     await ch.send(embed=e)
-                # Role rewards (grant when crossing threshold)
                 for req, rid in LEVEL_ROLES.items():
                     role = msg.guild.get_role(rid)
                     if role and new_lvl >= req and role not in msg.author.roles:
@@ -1501,7 +1493,6 @@ class Logging(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_ban(self, guild: discord.Guild, user: discord.User):
-        # find actor from audit logs
         actor, reason = None, None
         try:
             async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.ban):
@@ -1514,7 +1505,6 @@ class Logging(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        # detect kick
         actor, reason, kicked = None, None, False
         try:
             async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
@@ -1566,7 +1556,6 @@ async def seed_selfroles_panel(guild: discord.Guild):
         save_db(DB)
 
 async def restore_giveaway_views(guild: discord.Guild):
-    # re-bind persistent views for active giveaways
     for gid, gw in list(DB.get("gw_active", {}).items()):
         if int(gw.get("guild_id", 0)) == guild.id:
             bot.add_view(GWJoinView(gid, admin=True))
@@ -1582,12 +1571,9 @@ async def setup_all():
     await bot.add_cog(SelfRoles(bot))
     await bot.add_cog(ActivityGuard(bot))
     await bot.add_cog(Logging(bot))
-
-    # Persistent component bindings (so buttons survive restarts)
+    # Persistent views
     bot.add_view(TicketOpenPanel())
     bot.add_view(SelfRolesView())
-
-import itertools
 
 STATUS_ROTATE = itertools.cycle([
     ("online", "Moderation aktiv"),
@@ -1602,29 +1588,44 @@ STATUS_ROTATE = itertools.cycle([
     ("online", "System stabil"),
 ])
 
+_status_task_started = False
+
+def _status_from_env(v: str) -> discord.Status:
+    return {
+        "online": discord.Status.online,
+        "idle": discord.Status.idle,
+        "dnd": discord.Status.dnd,
+        "invisible": discord.Status.invisible,
+        "offline": discord.Status.invisible,  # alias
+    }.get(v.lower(), discord.Status.online)
+
 async def rotate_status():
     await bot.wait_until_ready()
+    # If invisible, do not rotate (activities are hidden anyway)
+    if _status_from_env(PRESENCE_STATUS) is discord.Status.invisible:
+        await bot.change_presence(status=discord.Status.invisible, activity=None)
+        return
     while not bot.is_closed():
         _, text = next(STATUS_ROTATE)
         await bot.change_presence(
-            status=discord.Status.online,
+            status=_status_from_env(PRESENCE_STATUS),
             activity=discord.Game(name=text)
         )
         await asyncio.sleep(120)
 
-
 @bot.event
 async def on_ready():
+    global _status_task_started
     print(f"✅ Logged in as {bot.user} ({bot.user.id})")
-    # mount cogs/views
     await setup_all()
-    # seed panels & restore views
     for g in bot.guilds:
         await seed_ticket_panel(g)
         await seed_selfroles_panel(g)
         await restore_giveaway_views(g)
+    if not _status_task_started:
         bot.loop.create_task(rotate_status())
-    # sync commands AFTER login (avoids application_id error)
+        _status_task_started = True
+    # Sync commands
     try:
         if GUILD_ID_INT:
             guild_obj = discord.Object(id=GUILD_ID_INT)
@@ -1637,5 +1638,34 @@ async def on_ready():
     except Exception as e:
         print(f"⚠️ Command sync failed: {e}")
 
+@bot.tree.error
+async def on_app_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    msg = "Error."
+    if isinstance(error, app_commands.CheckFailure):
+        msg = "Not permitted."
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=EPHEMERAL)
+        else:
+            await interaction.response.send_message(msg, ephemeral=EPHEMERAL)
+    except Exception:
+        pass
+
+# =========================== RUN BOTH (Render) ==============================
+async def _run_web():
+    port = int(os.environ.get("PORT", "8000"))
+    config = uvicorn.Config(api, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+async def main():
+    await asyncio.gather(
+        _run_web(),
+        bot.start(TOKEN),
+    )
+
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
